@@ -16,7 +16,7 @@ public:
 
 private:
 	// 类似shadertoy的函数 输入坐标(uv也就是coord)，输出像素值
-	uint32_t PerPixel(glm::vec2 coord);
+	glm::vec4 PerPixel(glm::vec2 coord);
 	
 private:
 	// 最终的生成目标是一张image

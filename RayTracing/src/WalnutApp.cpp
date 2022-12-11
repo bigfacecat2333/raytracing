@@ -30,7 +30,8 @@ public:
 		auto image = m_renderer.GetFinalImage();
 		// 通过ImGui::Image来显示图片
 		if (image) {
-			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(), (float)image->GetHeight() });
+			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(), (float)image->GetHeight() }, 
+				ImVec2(0, 1), ImVec2(1, 0));  // 通过ImVec2来控制图片的显示方向（颠倒uv轴）
 		}
 
 		ImGui::End();
