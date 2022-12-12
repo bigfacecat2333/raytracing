@@ -1,5 +1,9 @@
 #include "Renderer.h"
 
+#include "Walnut/Random.h"
+
+#include <execution>
+
 namespace Utils {
 	
 	static uint32_t ConvertToRGBA(const glm::vec4& color)
@@ -15,7 +19,7 @@ namespace Utils {
 	
 }
 
-void Renderer::onResize(uint32_t width, uint32_t height)
+void Renderer::OnResize(uint32_t width, uint32_t height)
 {
 	if (m_FinalImage)
 	{
@@ -35,79 +39,186 @@ void Renderer::onResize(uint32_t width, uint32_t height)
 
 	delete[] m_ImageData;  // 释放之前的内存
 	m_ImageData = new uint32_t[width * height];  // 重新分配内存
+
+	delete[] m_AccumulationData;
+	m_AccumulationData = new glm::vec4[width * height];
+
+	m_ImageHorizontalIter.resize(width);
+	m_ImageVerticalIter.resize(height);
+	for (uint32_t i = 0; i < width; i++)
+		m_ImageHorizontalIter[i] = i;
+	for (uint32_t i = 0; i < height; i++)
+		m_ImageVerticalIter[i] = i;
 }
 
-void Renderer::Render()
+void Renderer::Render(const Scene& scene, const Camera& camera)
 {
-	// render all pixels 注意：y是行 x是列
+	m_ActiveScene = &scene;
+	m_ActiveCamera = &camera;
+
+	if (m_FrameIndex == 1)
+		memset(m_AccumulationData, 0, m_FinalImage->GetWidth() * m_FinalImage->GetHeight() * sizeof(glm::vec4));
+
+#define MT 1
+#if MT
+	std::for_each(std::execution::par, m_ImageVerticalIter.begin(), m_ImageVerticalIter.end(),
+		[this](uint32_t y)
+		{
+			std::for_each(std::execution::par, m_ImageHorizontalIter.begin(), m_ImageHorizontalIter.end(),
+			[this, y](uint32_t x)
+				{
+					glm::vec4 color = PerPixel(x, y);
+	m_AccumulationData[x + y * m_FinalImage->GetWidth()] += color;
+
+	glm::vec4 accumulatedColor = m_AccumulationData[x + y * m_FinalImage->GetWidth()];
+	accumulatedColor /= (float)m_FrameIndex;
+
+	accumulatedColor = glm::clamp(accumulatedColor, glm::vec4(0.0f), glm::vec4(1.0f));
+	m_ImageData[x + y * m_FinalImage->GetWidth()] = Utils::ConvertToRGBA(accumulatedColor);
+				});
+		});
+
+#else
+	//render all pixels 注意：y是行 x是列
 	for (uint32_t y = 0; y < m_FinalImage->GetHeight(); y++)
 	{
 		for (uint32_t x = 0; x < m_FinalImage->GetWidth(); x++)
 		{
-			glm::vec2 coord = { (float)x / m_FinalImage->GetWidth(), (float)y / m_FinalImage->GetHeight() };
-			
-			// remap coordinate
-			coord = coord * 2.0f - 1.0f;  // (0, 0) -> (-1, -1); (1, 1) -> (1, 1)
-			
-			glm::vec4 color = PerPixel(coord);  // 调用PerPixel函数计算每个像素的颜色
-			color = glm::clamp(color, 0.0f, 1.0f);  // clamp color to [0, 1]
-			m_ImageData[x + y * m_FinalImage->GetWidth()] = Utils::ConvertToRGBA(color);
+			glm::vec4 color = PerPixel(x, y);
+			m_AccumulationData[x + y * m_FinalImage->GetWidth()] += color;
+
+			glm::vec4 accumulatedColor = m_AccumulationData[x + y * m_FinalImage->GetWidth()];
+			accumulatedColor /= (float)m_FrameIndex;
+
+			accumulatedColor = glm::clamp(accumulatedColor, glm::vec4(0.0f), glm::vec4(1.0f));
+			m_ImageData[x + y * m_FinalImage->GetWidth()] = Utils::ConvertToRGBA(accumulatedColor);
 		}
 	}
-	
-	m_FinalImage->SetData(m_ImageData);  // 将数据传入GPU
+#endif
+
+	m_FinalImage->SetData(m_ImageData);
+
+	if (m_Settings.Accumulate)
+		m_FrameIndex++;
+	else
+		m_FrameIndex = 1;
+}
+
+glm::vec4 Renderer::PerPixel(uint32_t x, uint32_t y)
+{
+	Ray ray;
+	ray.Origin = m_ActiveCamera->GetPosition();
+	ray.Direction = m_ActiveCamera->GetRayDirections()[x + y * m_FinalImage->GetWidth()];
+
+	glm::vec3 color(0.0f);
+	float multiplier = 1.0f;
+
+	int bounces = 5;
+	for (int i = 0; i < bounces; i++)
+	{
+		Renderer::HitPayload payload = TraceRay(ray);
+		if (payload.HitDistance < 0.0f)
+		{
+			glm::vec3 skyColor = glm::vec3(0.6f, 0.7f, 0.9f);
+			color += skyColor * multiplier;
+			break;
+		}
+
+		glm::vec3 lightDir = glm::normalize(glm::vec3(-1, -1, -1));
+		float lightIntensity = glm::max(glm::dot(payload.WorldNormal, -lightDir), 0.0f); // == cos(angle)
+
+		const Sphere& sphere = m_ActiveScene->Spheres[payload.ObjectIndex];
+		const Material& material = m_ActiveScene->Materials[sphere.MaterialIndex];
+
+		glm::vec3 sphereColor = material.Albedo;
+		sphereColor *= lightIntensity;
+		color += sphereColor * multiplier;
+
+		multiplier *= 0.5f;
+
+		ray.Origin = payload.WorldPosition + payload.WorldNormal * 0.0001f;
+		ray.Direction = glm::reflect(ray.Direction,
+			payload.WorldNormal + material.Roughness * Walnut::Random::Vec3(-0.5f, 0.5f));
+	}
+
+	return glm::vec4(color, 1.0f);
 }
 
 // 相当于shader language
-glm::vec4 Renderer::PerPixel(glm::vec2 coord)
+Renderer::HitPayload Renderer::TraceRay(const Ray& ray)
 {
-	// channels
- 	uint8_t r = (uint8_t)(coord.x * 255.0f);
-	uint8_t g = (uint8_t)(coord.y * 255.0f);
-
 	// 计算与2d的圆是否相交的公式：(bx^2 + by^2) * t^2 + (2axbx + 2ayby) * t + (ax^2 + ay^2 - r^2) = 0 
 	// 圆心在000
 	// a是ray的原点
 	// b是ray的方向
 	// r是圆的半径
 	// t是hit distance射线的长度
-	glm::vec3 rayOrigin(0.0f, 0.0f, 1.0f);  // 此时摄像机与光源同位置
-	glm::vec3 rayDirection(coord.x, coord.y, -1.0f);
-	float radius = 0.5f;
-	// rayDirection = glm::normalize(rayDirection); normalize后点积为1，但相比于计算点积，normalize更耗时
+	int closestSphere = -1;  // 最近的球的序号
+	float hitDistance = std::numeric_limits<float>::max();  // 最近的球的距离 FLT_MAX相对来说占用更小
 	
-	// float a = rayDirection.x * rayDirection.x + rayDirection.y * rayDirection.y + rayDirection.z * rayDirection.z;
-	float firstTerm = glm::dot(rayDirection, rayDirection);
-	float secondTerm = 2.0f * glm::dot(rayOrigin, rayDirection);
-	float thirdTerm = glm::dot(rayOrigin, rayOrigin) - radius * radius;
-
-	// quadratic formula discriminant 二次方公式判别法：
-	// b^2 - 4 * a * c
-	float discriminant = secondTerm * secondTerm - 4.0f * firstTerm * thirdTerm;
-	if (discriminant < 0)
+	for (size_t i = 0; i < m_ActiveScene->Spheres.size(); i++)
 	{
-		// ray doesn't hit the sphere
-		// 返回黑色
-		return glm::vec4(0, 0, 0, 1); // 0xff000000;
+		const Sphere& sphere = m_ActiveScene->Spheres[i];
+		// (x - a)  (y - a)
+		glm::vec3 origin = ray.Origin - sphere.Position;
+
+		// float a = rayDirection.x * rayDirection.x + rayDirection.y * rayDirection.y + rayDirection.z * rayDirection.z;
+		float a = glm::dot(ray.Direction, ray.Direction);  // firstTerm
+		float b = 2.0f * glm::dot(origin, ray.Direction);  // SecondTerm
+		float c = glm::dot(origin, origin) - sphere.Radius * sphere.Radius;  // ThirdTerm
+
+		// Quadratic forumula discriminant:
+		// b^2 - 4ac
+
+		float discriminant = b * b - 4.0f * a * c;
+		if (discriminant < 0.0f)
+			continue;
+
+		// Quadratic formula:
+		// (-b +- sqrt(discriminant)) / 2a
+
+		// float t0 = (-b + glm::sqrt(discriminant)) / (2.0f * a); // Second hit distance (currently unused)
+		float closestT = (-b - glm::sqrt(discriminant)) / (2.0f * a);
+
+		// 更新序号和距离
+		if (closestT > 0.0f && closestT < hitDistance)
+		{
+			hitDistance = closestT;
+			closestSphere = (int)i;
+		}
 	}
-	// (-b +- sqrt(discriminat)) / (2.0f * a)
-	float t0 = (-secondTerm + sqrt(discriminant)) / (2.0f * firstTerm);
-	float closestT = (-secondTerm - sqrt(discriminant)) / (2.0f * firstTerm);
 
-	// hit point
-	glm::vec3 hitPoint = rayOrigin + rayDirection * closestT;
+	if (closestSphere < 0)
+		return Miss(ray);
 
-	// normal
-	glm::vec3 normal = glm::normalize(hitPoint);  // 球心为000
+	return ClosestHit(ray, hitDistance, closestSphere);
+
+}
+
+Renderer::HitPayload Renderer::ClosestHit(const Ray& ray, float hitDistance, int objectIndex)
+{
+	Renderer::HitPayload payload;
+	payload.HitDistance = hitDistance;
+	payload.ObjectIndex = objectIndex;
+
+	// 最近的球体
+	const Sphere& closestSphere = m_ActiveScene->Spheres[objectIndex];
+
+	// (x - a)  (y - a) 移动的是摄像机，但实际上我们只有一个屏幕，所以实际上移动的是屏幕上的球体
+	glm::vec3 origin = ray.Origin - closestSphere.Position;
 	
-	glm::vec3 sphereColor = normal * 0.5f + 0.5f;  // 将normal的值从[-1, 1]映射到[0, 1]之间
-	glm::vec3 lightDir = glm::normalize(glm::vec3(-1.0f, -1.0f, -1.0f));
+	// hit point a + dir * t
+	payload.WorldPosition = origin + ray.Direction * hitDistance;
+	payload.WorldNormal = glm::normalize(payload.WorldPosition);
 
-	float cosAngle = glm::dot(normal, -lightDir);
-	float d = glm::max(cosAngle, 0.0f);  // 如果光照和法线大于90度，就当等于90度处理
-	
-	sphereColor *= d;
-	
-	return glm::vec4(sphereColor, 1);
+	payload.WorldPosition += closestSphere.Position;
 
+	return payload;
+}
+
+Renderer::HitPayload Renderer::Miss(const Ray& ray)
+{
+	Renderer::HitPayload payload;
+	payload.HitDistance = -1.0f;
+	return payload;
 }

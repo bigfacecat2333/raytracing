@@ -4,13 +4,51 @@
 #include "Walnut/Image.h"
 #include "Walnut/Timer.h"
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include "Renderer.h"
+#include "Camera.h"
+#include "Scene.h"
 
 using namespace Walnut;
 
 class ExampleLayer : public Walnut::Layer
 {
 public:
+	ExampleLayer()
+		:m_Camera(45.0f, 0.1f, 100.0f) 
+	{
+		Material& pinkSphere = m_Scene.Materials.emplace_back();  // index = 0
+		pinkSphere.Albedo = { 1.0f, 0.0f, 1.0f };
+		pinkSphere.Roughness = 0.0f;
+
+		Material& blueSphere = m_Scene.Materials.emplace_back();  // index = 1
+		blueSphere.Albedo = { 0.2f, 0.3f, 1.0f };
+		blueSphere.Roughness = 0.1f;
+
+		{
+			Sphere sphere;
+			sphere.Position = { 0.0f, 0.0f, 0.0f };
+			sphere.Radius = 1.0f;
+			sphere.MaterialIndex = 0;
+			m_Scene.Spheres.push_back(sphere);
+		}
+
+		{
+			Sphere sphere;
+			sphere.Position = { 0.0f, -101.0f, 0.0f };
+			sphere.Radius = 100.0f;
+			sphere.MaterialIndex = 1;
+			m_Scene.Spheres.push_back(sphere);
+		}
+	}
+
+	
+	virtual void OnUpdate(float ts) override
+	{
+		m_Camera.OnUpdate(ts);
+	}
+
 	virtual void OnUIRender() override
 	{
 		ImGui::Begin("Settings");
@@ -20,6 +58,38 @@ public:
 			Render();
 		}
 		ImGui::End();
+
+		ImGui::Begin("Scene");
+		for (size_t i = 0; i < m_Scene.Spheres.size(); i++)
+		{
+			ImGui::PushID(i);
+
+			Sphere& sphere = m_Scene.Spheres[i];
+			// add control for position , 0.1f is the minmum speed glm::value_ptr () 传入一个矩阵，返回一个数组指针
+			ImGui::DragFloat3("Position", glm::value_ptr(sphere.Position), 0.1f);
+			ImGui::DragFloat("Radius", &sphere.Radius, 0.1f);
+			ImGui::DragInt("Material", &sphere.MaterialIndex, 1.0f, 0, (int)m_Scene.Materials.size() - 1);
+
+			ImGui::Separator();
+
+			ImGui::PopID();
+		}
+
+		for (size_t i = 0; i < m_Scene.Materials.size(); i++)
+		{
+			ImGui::PushID(i);
+
+			Material& material = m_Scene.Materials[i];
+			ImGui::ColorEdit3("Albedo", glm::value_ptr(material.Albedo));
+			ImGui::DragFloat("Roughness", &material.Roughness, 0.05f, 0.0f, 1.0f);
+			ImGui::DragFloat("Metallic", &material.Metallic, 0.05f, 0.0f, 1.0f);
+
+			ImGui::Separator();
+
+			ImGui::PopID();
+		}
+
+		ImGui::End();
 		
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 		ImGui::Begin("Viewport");
@@ -27,7 +97,7 @@ public:
 		m_ViewportWidth = (uint32_t)ImGui::GetContentRegionAvail().x;
 		m_ViewportHeight = (uint32_t)ImGui::GetContentRegionAvail().y;
 		
-		auto image = m_renderer.GetFinalImage();
+		auto image = m_Renderer.GetFinalImage();
 		// 通过ImGui::Image来显示图片
 		if (image) {
 			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(), (float)image->GetHeight() }, 
@@ -46,14 +116,17 @@ public:
 		Timer timer;
 
 		// renderer resize
-		m_renderer.onResize(m_ViewportWidth, m_ViewportHeight);
+		m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
+		m_Camera.OnResize(m_ViewportWidth, m_ViewportHeight);
 		// renderer render
-		m_renderer.Render();
+		m_Renderer.Render(m_Scene, m_Camera);
 		
 		m_LastRenderTime = timer.Elapsed();  // 计算渲染时间
 	}
 private:
-	Renderer m_renderer;
+	Renderer m_Renderer;
+	Camera m_Camera;
+	Scene m_Scene;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	

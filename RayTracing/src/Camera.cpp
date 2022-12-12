@@ -18,19 +18,22 @@ Camera::Camera(float verticalFOV, float nearClip, float farClip)
 bool Camera::OnUpdate(float ts)
 {
 	glm::vec2 mousePos = Input::GetMousePosition();
-	glm::vec2 delta = (mousePos - m_LastMousePosition) * 0.002f;
+	glm::vec2 delta = (mousePos - m_LastMousePosition) * 0.002f;  // 表示在一帧里鼠标移动了多少
 	m_LastMousePosition = mousePos;
 
+	// 按住鼠标右键，移动鼠标，相机旋转
 	if (!Input::IsMouseButtonDown(MouseButton::Right))
 	{
 		Input::SetCursorMode(CursorMode::Normal);
 		return false;
 	}
 
+	// 锁住游标
 	Input::SetCursorMode(CursorMode::Locked);
 
 	bool moved = false;
 
+	// 不用计算沿着z轴旋转的情况
 	constexpr glm::vec3 upDirection(0.0f, 1.0f, 0.0f);
 	glm::vec3 rightDirection = glm::cross(m_ForwardDirection, upDirection);
 
@@ -68,12 +71,13 @@ bool Camera::OnUpdate(float ts)
 		moved = true;
 	}
 
-	// Rotation
+	// Rotation 只有旋转会改变相机的方向
 	if (delta.x != 0.0f || delta.y != 0.0f)
 	{
 		float pitchDelta = delta.y * GetRotationSpeed();
 		float yawDelta = delta.x * GetRotationSpeed();
 
+		// 计算一个新的forward direction
 		glm::quat q = glm::normalize(glm::cross(glm::angleAxis(-pitchDelta, rightDirection),
 			glm::angleAxis(-yawDelta, glm::vec3(0.f, 1.0f, 0.0f))));
 		m_ForwardDirection = glm::rotate(q, m_ForwardDirection);
@@ -109,18 +113,22 @@ float Camera::GetRotationSpeed()
 
 void Camera::RecalculateProjection()
 {
+	// 透视投影
 	m_Projection = glm::perspectiveFov(glm::radians(m_VerticalFOV), (float)m_ViewportWidth, (float)m_ViewportHeight, m_NearClip, m_FarClip);
 	m_InverseProjection = glm::inverse(m_Projection);
 }
 
+// Get the View Matrix
 void Camera::RecalculateView()
 {
+	// lookat函数:eye,center,up
 	m_View = glm::lookAt(m_Position, m_Position + m_ForwardDirection, glm::vec3(0, 1, 0));
 	m_InverseView = glm::inverse(m_View);
 }
 
 void Camera::RecalculateRayDirections()
 {
+	// 在opengl中以摄像机为中心，所以不存在这一步，改变的是空间中的物体（vector shader）
 	m_RayDirections.resize(m_ViewportWidth * m_ViewportHeight);
 
 	for (uint32_t y = 0; y < m_ViewportHeight; y++)
@@ -130,6 +138,10 @@ void Camera::RecalculateRayDirections()
 			glm::vec2 coord = { (float)x / (float)m_ViewportWidth, (float)y / (float)m_ViewportHeight };
 			coord = coord * 2.0f - 1.0f; // -1 -> 1
 
+			// coord是屏幕中的pixel，要把它转换为世界空间上的坐标
+			// 这里是cast ray 到 world space
+			// 正常情况下：projection * view * model * vpostion;
+			// 但这里乘以逆矩阵，所以是：inverse(view) * inverse(projection) * vpostion;
 			glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
 			glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
 			m_RayDirections[x + y * m_ViewportWidth] = rayDirection;
