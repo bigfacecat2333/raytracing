@@ -53,27 +53,33 @@ void Renderer::OnResize(uint32_t width, uint32_t height)
 
 void Renderer::Render(const Scene& scene, const Camera& camera)
 {
+	// render外有一个for循环表示渲染了多少帧 101里的N
 	m_ActiveScene = &scene;
 	m_ActiveCamera = &camera;
 
 	if (m_FrameIndex == 1)
 		memset(m_AccumulationData, 0, m_FinalImage->GetWidth() * m_FinalImage->GetHeight() * sizeof(glm::vec4));
 
+// multi-thread in C++ 17
+// std::for_each() std::execution::par 用于并行计算
+// for y = 0; y <= height; y++
+//	  for x = 0; x <= width; x++
 #define MT 1
 #if MT
+	// 遍历每一个像素 pdf = 1 / (width * height) -》决定了方向
 	std::for_each(std::execution::par, m_ImageVerticalIter.begin(), m_ImageVerticalIter.end(),
-		[this](uint32_t y)
+		[this](uint32_t y)  // lambda 表达式
 		{
 			std::for_each(std::execution::par, m_ImageHorizontalIter.begin(), m_ImageHorizontalIter.end(),
 			[this, y](uint32_t x)
 				{
 					glm::vec4 color = PerPixel(x, y);  // 外层循环是对每个像素进行追踪，不同于光栅化对每个变换来的物体 （原因是光线追踪考虑全局光照），也就是在开始离散化
 
-					// path tracing
+					// path tracing：累加颜色，也就是path的含义（考虑间接光）
 					m_AccumulationData[x + y * m_FinalImage->GetWidth()] += color;
 
 					glm::vec4 accumulatedColor = m_AccumulationData[x + y * m_FinalImage->GetWidth()];
-					accumulatedColor /= (float)m_FrameIndex;
+					accumulatedColor /= (float)m_FrameIndex;  // (1/N)
 
 					accumulatedColor = glm::clamp(accumulatedColor, glm::vec4(0.0f), glm::vec4(1.0f));
 					m_ImageData[x + y * m_FinalImage->GetWidth()] = Utils::ConvertToRGBA(accumulatedColor);
@@ -109,6 +115,7 @@ void Renderer::Render(const Scene& scene, const Camera& camera)
 
 glm::vec4 Renderer::PerPixel(uint32_t x, uint32_t y)
 {
+	// 只有一条光线 N=1
 	Ray ray; 
 	ray.Origin = m_ActiveCamera->GetPosition();
 	ray.Direction = m_ActiveCamera->GetRayDirections()[x + y * m_FinalImage->GetWidth()];
@@ -118,9 +125,10 @@ glm::vec4 Renderer::PerPixel(uint32_t x, uint32_t y)
 	float multiplier = 1.0f;
 
 	// path tracing
-	int bounces = 5;
+	int bounces = 5;  // 这里的for相当于101中的递归了，也就是不断的记录ray的原点和方向并追踪
 	for (int i = 0; i < bounces; i++)
 	{
+		// Trace Ray 判断是否击中物体 r, wi
 		Renderer::HitPayload payload = TraceRay(ray);
 		if (payload.HitDistance < 0.0f)  // miss时返回-1
 		{
@@ -129,15 +137,17 @@ glm::vec4 Renderer::PerPixel(uint32_t x, uint32_t y)
 			break;
 		}
 
-		glm::vec3 lightDir = glm::normalize(glm::vec3(-1, -1, -1));
-		float lightIntensity = glm::max(glm::dot(payload.WorldNormal, -lightDir), 0.0f); // == cos(angle) irradiance?
+		// 击中物体
+		// Lo += L_i * f_r * cosine / pdf(wi)
+		glm::vec3 lightDir = glm::normalize(glm::vec3(-1, -1, -1));  // 只考虑light
+		float lightIntensity = glm::max(glm::dot(payload.WorldNormal, -lightDir), 0.0f); // == cos(angle) Li或者shade  li * dot(n, wi)
 
 		const Sphere& sphere = m_ActiveScene->Spheres[payload.ObjectIndex];
 		const Material& material = m_ActiveScene->Materials[sphere.MaterialIndex];
 
-		glm::vec3 sphereColor = material.Albedo;
+		glm::vec3 sphereColor = material.Albedo;  // f_r(BRDF)  fr(p, wi, wo)
 		sphereColor *= lightIntensity;
-		color += sphereColor * multiplier;
+		color += sphereColor * multiplier;  // Lo += L_i * f_r * cosine
 
 		multiplier *= 0.5f;
 
