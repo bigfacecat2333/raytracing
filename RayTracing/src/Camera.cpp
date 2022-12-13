@@ -128,7 +128,8 @@ void Camera::RecalculateView()
 
 void Camera::RecalculateRayDirections()
 {
-	// 在opengl中以摄像机为中心，所以不存在这一步，改变的是空间中的物体（vector shader）
+	// 在光栅化中不需要计算光线转化后的值，因为光栅化先确定位置，再确定光线（for 物体 for pixel）,如果视口发生变换，应当改变物体在变换后的位置
+	// 在光追中先确定光线，再确定位置（for pixel for 物体），如果视口发生变换，应当改变光线变换后的方向
 	m_RayDirections.resize(m_ViewportWidth * m_ViewportHeight);
 
 	for (uint32_t y = 0; y < m_ViewportHeight; y++)
@@ -137,14 +138,14 @@ void Camera::RecalculateRayDirections()
 		{
 			glm::vec2 coord = { (float)x / (float)m_ViewportWidth, (float)y / (float)m_ViewportHeight };
 			coord = coord * 2.0f - 1.0f; // -1 -> 1
-
-			// coord是屏幕中的pixel，要把它转换为世界空间上的坐标
+			// 可以画图理解：clip space -> view space -> world space
+			// coord是屏幕中的pixel（normalized coord），要把它转换为世界空间上的坐标
 			// 这里是cast ray 到 world space
 			// 正常情况下：projection * view * model * vpostion;
-			// 但这里乘以逆矩阵，所以是：inverse(view) * inverse(projection) * vpostion;
-			glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
+			// 但这里乘以逆矩阵，所以是：inverse(view) * inverse(projection) * vpostion; (model没有是因为只到world space)
+			glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);  // position（在view space下）
 			glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
-			m_RayDirections[x + y * m_ViewportWidth] = rayDirection;
+			m_RayDirections[x + y * m_ViewportWidth] = rayDirection;  // cached vectors
 		}
 	}
 }
